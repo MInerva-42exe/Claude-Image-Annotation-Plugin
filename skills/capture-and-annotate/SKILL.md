@@ -7,27 +7,31 @@ description: One-shot orchestrator — take a screenshot and immediately apply a
 
 Compose `screenshot` + `annotate` into one step. Use when the user says things like "screenshot this and circle X", "grab the active window and add a numbered marker at 200,300", or "capture a region and label it 'Step 1'".
 
-## Inputs
-
-- `screenshot_mode`: passed through to the `screenshot` skill (`full`, `region`, `window`, `delay:N`)
-- `output`: final annotated image path. Default: `~/Pictures/Screenshots/<ISO-timestamp>-annotated.png`.
-- `operations`: same shape as the `annotate` skill's `operations` list.
-
 ## Flow
 
-1. Invoke the `screenshot` skill with `mode = screenshot_mode`. Save to a temp path: `/tmp/cap-<random>.png`.
+1. Run the screenshot script to a temp path:
+   ```bash
+   TMP=/tmp/cap-$RANDOM.png
+   bash "$CLAUDE_PLUGIN_ROOT/scripts/screenshot.sh" "$MODE" "$TMP"
+   ```
 2. Verify the temp file exists and is non-empty. If not (e.g. region selection cancelled), stop and report — do not produce an empty annotated file.
-3. Invoke the `annotate` skill with `input = temp path`, `output = final path`, and the user-supplied operations.
-4. Delete the temp file.
-5. Report the final path and a summary of what was captured and annotated.
+3. Build the annotation spec JSON.
+4. Run the annotator, writing to the user's chosen final path:
+   ```bash
+   python3 "$CLAUDE_PLUGIN_ROOT/scripts/annotate.py" \
+     --input "$TMP" --spec "$SPEC" --output "$FINAL"
+   ```
+5. Delete the temp file (`rm "$TMP"`).
+6. Report the final path.
 
-## Why orchestrate rather than call each skill manually
+## Default output
 
-The user's coordinates for annotations are in the captured image's coordinate space, not the screen's. Doing this in one step makes that obvious — the user can say "draw an arrow at 400,300 in the screenshot" and the orchestrator wires it through correctly.
+If the user doesn't give a final path, write to `~/Pictures/Screenshots/<ISO-timestamp>-annotated.png`. The captured original is the temp file, so deleting it after annotation is fine — there's no "original" to preserve. If the user *does* want the unannotated capture saved too, run the screenshot script first to a real path, then run `annotate` against it (which will produce a sibling `annotated/` folder, leaving the original untouched).
 
-## Edge cases
+## Coordinate guidance
 
-- If the screenshot mode is `region`, the user picks the region interactively, so they cannot know exact pixel coordinates in advance. In that case, either:
-  - Capture first, report the resulting image dimensions, and ask the user for coordinates before annotating, or
-  - Accept relative descriptors like `center`, `top-left`, `bottom-right` in `operations` and translate to pixels after capture (centre → `w/2, h/2`, etc.).
-- Keep the temp file on annotation failure so the capture isn't lost. Report the temp path so the user can retry the annotate step manually.
+User coordinates are in the captured image's coordinate space, not the screen's. For region captures the user can't know exact pixel coordinates in advance — capture first, report the resulting image dimensions, then ask for coordinates. Or accept relative descriptors (`center`, `top-left`, `bottom-right`) and translate to pixels after capture.
+
+## On failure
+
+If annotation fails, keep the temp file and report its path so the user can retry.

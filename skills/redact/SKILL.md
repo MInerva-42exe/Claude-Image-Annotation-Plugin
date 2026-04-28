@@ -1,56 +1,35 @@
 ---
 name: redact
-description: Privacy redaction — blur, pixelate, or solid-fill rectangular regions of an image to hide sensitive content (faces, names, tokens, IPs, PII). Headless via ImageMagick; safe defaults that prevent recoverable redaction.
+description: Privacy redaction — pixelate (default), blur, or solid-fill rectangular regions of an image to hide sensitive content (faces, names, tokens, IPs, PII). Originals are never modified; output goes to <input_dir>/redacted/<stem>_redacted<ext>. EXIF is stripped on output.
 ---
 
 # Redact
 
-Hide sensitive regions of an image. Use this rather than `annotate` when the goal is privacy — the defaults here are tuned to make the redaction non-recoverable.
+Hide sensitive regions of an image. Use this rather than `annotate` when the goal is privacy — defaults are tuned to make the redaction non-recoverable.
 
-## Inputs
+## Originals-clean rule
 
-- `input`: absolute path to source image
-- `output`: absolute path. Default: append `-redacted` to the input stem.
-- `regions`: list of `{x, y, w, h, method?}`
-  - `method`: `pixelate` (default) | `blur` | `solid`
+This skill **never overwrites the original**. Output goes to `<input_dir>/redacted/<stem>_redacted<ext>` by default, or to `--output PATH` if supplied. There is no in-place mode for redaction — keep the source intact (or delete it yourself once you've verified the redacted copy).
+
+## Just run the script
+
+```bash
+bash "$CLAUDE_PLUGIN_ROOT/scripts/redact.sh" \
+  --input  "$INPUT" \
+  [--output "$OUTPUT"] \
+  [--method pixelate|blur|solid] \
+  --region X,Y,W,H [--region X,Y,W,H ...]
+```
 
 ## Why pixelate by default
 
-Gaussian blur on text is reversible with deconvolution — pixelation with a coarse grid is not. Default the block size to `max(16, min(w,h)/8)` so even a small region collapses to ≤8 cells per side.
+Gaussian blur on text is reversible with deconvolution; coarse pixelation isn't. The script picks a block size of `min(W,H)/8` (floor 16) so even a small region collapses to ≤8 cells per side.
 
-## ImageMagick recipes
+## EXIF strip
 
-Pixelate one region:
-
-```bash
-# block size B; scale down then back up with nearest-neighbour
-magick "$INPUT" \
-  \( -clone 0 -crop "${W}x${H}+${X}+${Y}" \
-     -scale "$((W/B))x$((H/B))" \
-     -scale "${W}x${H}!" \) \
-  -geometry "+${X}+${Y}" -composite "$OUTPUT"
-```
-
-Blur one region:
-
-```bash
-magick "$INPUT" \
-  \( -clone 0 -crop "${W}x${H}+${X}+${Y}" -blur 0x20 \) \
-  -geometry "+${X}+${Y}" -composite "$OUTPUT"
-```
-
-Solid fill (most opaque, least subtle):
-
-```bash
-magick "$INPUT" -fill black \
-  -draw "rectangle $X,$Y $((X+W)),$((Y+H))" "$OUTPUT"
-```
-
-Multiple regions: chain `\( ... \) -composite` clauses in one `magick` call so re-encoding only happens once.
+The script appends `-strip` to the ImageMagick pipeline so GPS, original timestamp, and device metadata don't survive into the redacted output.
 
 ## Behaviour rules
 
-- Always write to a new file. Never offer "overwrite in place" for redaction — the user should keep the original somewhere safe (or explicitly delete it themselves).
-- Strip EXIF on the output: append `-strip` to the magick command. Sensitive metadata (GPS, original timestamp, device) often survives visual redaction.
-- After writing, report: output path, regions redacted, method used per region, and a one-line reminder that the original still contains the unredacted content.
-- If the user asks to "blur a face/text" without coordinates, ask for the bounding box — this skill does not detect content automatically.
+- If the user asks to "blur a face/text" without coordinates, ask for the bounding box — this skill does not detect content.
+- After writing, report: output path, regions redacted, method per region, and a one-line reminder that the original still contains the unredacted content.

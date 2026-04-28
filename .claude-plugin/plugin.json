@@ -1,0 +1,12 @@
+{
+  "name": "image-annotation",
+  "version": "1.0.0",
+  "description": "Capture screenshots and apply annotations (arrows, text callouts, boxes, highlights, blur/redaction) on Linux via ImageMagick, Pillow, spectacle, grim+slurp, and flameshot.",
+  "author": {
+    "name": "Daniel Rosehill",
+    "url": "https://github.com/danielrosehill"
+  },
+  "repository": "https://github.com/danielrosehill/Claude-Image-Annotation-Plugin",
+  "license": "MIT",
+  "keywords": ["image", "annotation", "screenshot", "linux", "imagemagick"]
+}

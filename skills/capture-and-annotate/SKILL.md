@@ -15,23 +15,26 @@ Both scripts live at the plugin root, not in this skill's folder.
 
 ### `scripts/screenshot.sh <mode> [output_path]`
 
-Modes: `full`, `region`, `window`, `delay:N` (N in seconds).
+Modes: `full`, `region`, `window`, `window:PATTERN`, `delay:N` (N in seconds).
 
-Prints the output path on success. Exits **2** when the capture produced nothing — the usual cause is the user cancelling a region selection. Exits 1 for an unsupported mode/backend combination or a missing backend.
+`window:PATTERN` is the one to reach for when the user names a window ("screenshot the Finder window"). It matches PATTERN case-insensitively against the app name and window title, picks the largest match, and captures it with no click and no window rearrangement. macOS only, and it needs `pyobjc-framework-Quartz`; it exits 1 with the install command if that is missing. Plain `window` stays interactive everywhere.
 
-Backend support is uneven, and the wrapper picks the backend from the environment. This matters because `window` is the mode users ask for most:
+Prints the output path on success. Exits **2** when the capture produced nothing, which nearly always means the user cancelled the selection. Exits **1** for a backend failure, an unsupported mode/backend combination, or no backend at all.
 
-| Mode       | spectacle (KDE) | grim (wlroots)   | flameshot (fallback) |
-| ---------- | --------------- | ---------------- | -------------------- |
-| `full`     | yes             | yes              | yes                  |
-| `region`   | yes             | yes (needs slurp)| **ignores your path**|
-| `window`   | yes             | exits 1          | exits 1              |
-| `delay:N`  | yes             | yes (sleep)      | yes                  |
+Backend support is uneven, and the wrapper picks the backend from the environment:
 
-Two consequences worth knowing before you promise the user a result:
+| Mode       | screencapture (macOS) | spectacle (KDE) | grim (wlroots)    | flameshot (fallback) |
+| ---------- | --------------------- | --------------- | ----------------- | -------------------- |
+| `full`     | yes                   | yes             | yes               | yes                  |
+| `region`   | yes                   | yes             | yes (needs slurp) | yes                  |
+| `window`   | yes (click to pick)   | yes (frontmost) | exits 1           | exits 1              |
+| `window:PATTERN` | yes (no click)  | exits 1         | exits 1           | exits 1              |
+| `delay:N`  | yes                   | yes             | yes (sleep)       | yes                  |
 
-- **`window` only works on KDE/spectacle.** On other backends it exits 1. If the user asks for the active window and the backend isn't spectacle, say so and offer `region` instead rather than letting the script fail.
-- **`flameshot:region` ignores the output path you pass.** It saves under flameshot's own naming into the parent directory, so your temp path will not exist afterwards and this skill's flow will break. Prefer `full` on flameshot, or tell the user the fallback backend can't do a targeted region capture into a chosen file.
+Three consequences worth knowing before you promise the user a result:
+
+- **`window` is not available everywhere, and behaves differently where it is.** On spectacle it grabs the frontmost window unattended. On macOS plain `window` uses `screencapture -w`, which asks the user to *click* — prefer `window:PATTERN` there, which needs no click. On grim and flameshot it exits 1; offer `region` instead rather than letting the script fail.
+- **macOS needs Screen Recording permission.** Without it, `screencapture` silently returns desktop wallpaper with no windows in it. If the capture looks empty or wrong on a Mac, that is the first thing to check: System Settings → Privacy & Security → Screen Recording, for the terminal or app running Claude Code.
 - `delay:N` internally rewrites the mode to `full`, so there is no delayed region or delayed window capture.
 
 ### `scripts/annotate.py --input IN --spec SPEC.json [--output OUT] [--in-place]`
@@ -48,7 +51,8 @@ The top-level key is `operations` (not `annotations`). Supported types, with the
     {"type": "text",      "xy": [x,y], "content": "...", "color": "red", "size": 24, "background": true},
     {"type": "callout",   "target": [x,y], "label": [x,y], "content": "...", "color": "red", "size": 20},
     {"type": "highlight", "xy": [x,y,w,h], "color": "yellow", "opacity": 96},
-    {"type": "marker",    "xy": [x,y], "number": 1, "color": "red", "radius": 18}
+    {"type": "marker",    "xy": [x,y], "number": 1, "color": "red", "radius": 18},
+    {"type": "circle",    "xy": [x,y], "radius": 40, "color": "red", "width": 4, "fill": null}
   ]
 }
 ```
@@ -56,11 +60,13 @@ The top-level key is `operations` (not `annotations`). Supported types, with the
 Four traps in this schema, each of which produces a wrong image rather than an error:
 
 - **`box` and `highlight` take `[x, y, width, height]`, not two corners.** Deriving a box from a bounding box means `[x1, y1, x2-x1, y2-y1]`.
-- **There is no `circle` type.** Users ask to "circle" things constantly — that's the plugin's own headline phrasing — but the annotator can't draw one. Translate "circle X" to a `box` around X, or to a `marker` when the user wants a numbered badge. Say which you used, so the user isn't surprised by a rectangle.
-- **Unknown types are skipped with a warning on stderr and exit code 0.** A typo'd or invented type produces a clean-looking success with nothing drawn. Validate every `type` against the six above *before* running, and check stderr for `warn: unknown op type` after.
+- **`circle` takes a centre and radius**, unlike `box`. Use it when the user says "circle that"; use `box` when a rectangle genuinely fits the target better, and say which you chose.
+- **An unknown or missing `type` now fails the whole run** with exit 1 and nothing written, rather than silently skipping that annotation. If you see `error: operations[N]: unknown type`, fix the spec — no partial image was produced.
 - **Coordinates are not bounds-checked.** Off-image annotations draw silently into nothing.
 
 Also note: `text` with `background: true` (the default) renders the glyphs in **black** and uses `color` only for the box outline. For coloured text, pass `background: false`.
+
+Fonts resolve per platform (DejaVu/Liberation on Linux, Hiragino and Arial on macOS, Arial on Windows), with `ANNOTATE_FONT=/path/to/font.ttf` overriding. If nothing resolves, the annotator warns on stderr and falls back to a bitmap face that ignores `size` entirely — if text or marker digits come out tiny, that warning is why.
 
 **Always pass `--output` explicitly.** Without it the annotator writes to `<input_dir>/annotated/<stem>_annotated<ext>` — and since the input here is a temp file, that means the result lands in the temp directory and gets lost. `--output` creates parent directories itself.
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Backend-aware screenshot wrapper.
-# Usage: screenshot.sh <full|region|window|delay:N> [output_path]
+# Usage: screenshot.sh <full|region|window|window:PATTERN|delay:N> [output_path]
 # Default output: ~/Pictures/Screenshots/<ISO>.png
 
 set -euo pipefail
@@ -17,6 +17,14 @@ mkdir -p "$(dirname "$OUT")"
 
 DESKTOP="${XDG_CURRENT_DESKTOP:-}"
 SESSION="${XDG_SESSION_TYPE:-}"
+
+# window:PATTERN captures a named window with no click, by resolving its window
+# id and handing that to screencapture -l. Plain "window" stays interactive.
+WINDOW_PATTERN=""
+if [[ "$MODE" == window:* ]]; then
+  WINDOW_PATTERN="${MODE#window:}"
+  MODE=window-id
+fi
 
 DELAY=0
 if [[ "$MODE" == delay:* ]]; then
@@ -42,6 +50,43 @@ pick_backend() {
   echo none
 }
 
+resolve_window_id() {
+  python3 - "$1" <<'PYEOF'
+import sys
+try:
+    from Quartz import (CGWindowListCopyWindowInfo,
+                        kCGWindowListOptionOnScreenOnly, kCGNullWindowID)
+except ImportError:
+    sys.stderr.write("window:PATTERN needs pyobjc — pip3 install pyobjc-framework-Quartz\n")
+    sys.exit(3)
+
+pattern = sys.argv[1].lower()
+matches = []
+for w in (CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, kCGNullWindowID) or []):
+    if w.get("kCGWindowLayer", 0) != 0:      # skip dock, menu bar, desktop layers
+        continue
+    bounds = w.get("kCGWindowBounds") or {}
+    if bounds.get("Width", 0) < 50 or bounds.get("Height", 0) < 50:
+        continue
+    owner = w.get("kCGWindowOwnerName") or ""
+    title = w.get("kCGWindowName") or ""
+    if pattern in owner.lower() or pattern in title.lower():
+        area = bounds.get("Width", 0) * bounds.get("Height", 0)
+        matches.append((area, w.get("kCGWindowNumber"), owner, title))
+
+if not matches:
+    sys.stderr.write("no on-screen window matching %r\n" % sys.argv[1])
+    sys.exit(4)
+
+matches.sort(reverse=True)          # largest match wins
+_, wid, owner, title = matches[0]
+if len(matches) > 1:
+    sys.stderr.write("note: %d windows matched; using largest\n" % len(matches))
+sys.stderr.write("matched: %s — %s\n" % (owner, title or "(untitled)"))
+print(wid)
+PYEOF
+}
+
 BACKEND="$(pick_backend)"
 [[ "$BACKEND" == none ]] && {
   echo "no screenshot backend installed — run scripts/setup-env.sh" >&2
@@ -60,6 +105,9 @@ case "$BACKEND:$MODE" in
   # -w is click-to-pick-a-window, NOT "capture the frontmost window" the way
   # spectacle -a is. The user has to click the window they want.
   screencapture:window) screencapture -x -o -w "$OUT" ;;
+  screencapture:window-id)
+      WID="$(resolve_window_id "$WINDOW_PATTERN")" || exit 1
+      screencapture -x -o -l "$WID" "$OUT" ;;
 
   spectacle:full)   spectacle -b -n -d "$DELAY" -o "$OUT" ;;
   spectacle:region) spectacle -b -n -r -o "$OUT" ;;
@@ -76,6 +124,7 @@ case "$BACKEND:$MODE" in
   flameshot:region) flameshot gui --raw > "$OUT" ;;
   flameshot:window) echo "flameshot window mode not supported — use full or region" >&2; exit 1 ;;
 
+  *:window-id) echo "window:PATTERN is macOS-only; use 'window' or 'region'" >&2; exit 1 ;;
   *) echo "unsupported mode '$MODE' for backend '$BACKEND'" >&2; exit 1 ;;
 esac
 CAP_RC=$?

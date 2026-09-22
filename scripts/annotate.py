@@ -17,23 +17,51 @@ Spec format:
       {"type": "text",      "xy": [x,y], "content": "...", "color": "red", "size": 24, "background": true},
       {"type": "callout",   "target": [x,y], "label": [x,y], "content": "...", "color": "red", "size": 20},
       {"type": "highlight", "xy": [x,y,w,h], "color": "yellow", "opacity": 96},
-      {"type": "marker",    "xy": [x,y], "number": 1, "color": "red", "radius": 18}
+      {"type": "marker",    "xy": [x,y], "number": 1, "color": "red", "radius": 18},
+    {"type": "circle",    "xy": [x,y], "radius": 40, "color": "red", "width": 4, "fill": null}
     ]
   }
 """
 from __future__ import annotations
-import argparse, json, math, sys
+import argparse, json, math, os, sys
 from pathlib import Path
 from PIL import Image, ImageColor, ImageDraw, ImageFont
 
-DEFAULT_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+# First readable font wins. The old code hardcoded the DejaVu path, which only
+# exists on Linux — on macOS and Windows every text/callout/marker op silently
+# fell back to a tiny unscalable bitmap face with no CJK coverage.
+# Override with ANNOTATE_FONT=/path/to/font.ttf
+FONT_CANDIDATES = [
+    os.environ.get("ANNOTATE_FONT", ""),
+    # Linux
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    # macOS — Hiragino first so CJK renders instead of boxing out
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    "/System/Library/Fonts/PingFang.ttc",
+    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+    "/System/Library/Fonts/Helvetica.ttc",
+    # Windows
+    "C:\\Windows\\Fonts\\arialbd.ttf",
+]
+
+_warned = False
 
 
 def load_font(size: int):
-    try:
-        return ImageFont.truetype(DEFAULT_FONT, size)
-    except OSError:
-        return ImageFont.load_default()
+    global _warned
+    for path in FONT_CANDIDATES:
+        if not path:
+            continue
+        try:
+            return ImageFont.truetype(path, size)
+        except OSError:
+            continue
+    if not _warned:
+        print("warn: no scalable font found; text will be tiny and CJK will not "
+              "render. Set ANNOTATE_FONT=/path/to/font.ttf", file=sys.stderr)
+        _warned = True
+    return ImageFont.load_default()
 
 
 def draw_arrow(draw: ImageDraw.ImageDraw, fr, to, color, width):
@@ -73,6 +101,24 @@ def draw_marker(draw, xy, number, color, radius):
     draw.text((x - tw/2 - bbox[0], y - th/2 - bbox[1]), s, fill="white", font=font)
 
 
+KNOWN_OPS = {"arrow", "box", "text", "callout", "highlight", "marker", "circle"}
+
+
+def validate(ops: list) -> list:
+    """Check every op up front. A bad spec should fail before anything is drawn,
+    rather than producing a clean-looking image with annotations missing."""
+    errors = []
+    for i, op in enumerate(ops):
+        t = op.get("type")
+        if t is None:
+            errors.append(f"operations[{i}]: missing 'type'")
+        elif t not in KNOWN_OPS:
+            errors.append(
+                f"operations[{i}]: unknown type {t!r} "
+                f"(known: {', '.join(sorted(KNOWN_OPS))})")
+    return errors
+
+
 def apply(img: Image.Image, ops: list) -> Image.Image:
     img = img.convert("RGBA")
     overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
@@ -100,8 +146,11 @@ def apply(img: Image.Image, ops: list) -> Image.Image:
             draw.rectangle((x, y, x+w, y+h), fill=(r, g, b, opacity))
         elif t == "marker":
             draw_marker(draw, op["xy"], op["number"], color, op.get("radius", 18))
-        else:
-            print(f"warn: unknown op type {t!r}", file=sys.stderr)
+        elif t == "circle":
+            x, y = op["xy"]
+            r = op.get("radius", 40)
+            draw.ellipse((x-r, y-r, x+r, y+r), outline=color,
+                         width=op.get("width", 4), fill=op.get("fill"))
 
     return Image.alpha_composite(img, overlay).convert("RGB")
 
@@ -131,8 +180,15 @@ def main():
     else:
         out = default_output(inp)
 
+    ops = spec["operations"]
+    errors = validate(ops)
+    if errors:
+        for e in errors:
+            print(f"error: {e}", file=sys.stderr)
+        sys.exit(1)
+
     img = Image.open(inp)
-    result = apply(img, spec["operations"])
+    result = apply(img, ops)
     result.save(out)
     print(out)
 

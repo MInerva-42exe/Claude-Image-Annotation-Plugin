@@ -70,18 +70,32 @@ for w in (CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, kCGNullWin
         continue
     owner = w.get("kCGWindowOwnerName") or ""
     title = w.get("kCGWindowName") or ""
-    if pattern in owner.lower() or pattern in title.lower():
-        area = bounds.get("Width", 0) * bounds.get("Height", 0)
-        matches.append((area, w.get("kCGWindowNumber"), owner, title))
+    ol, tl = owner.lower(), title.lower()
+
+    # Rank by match quality, not just size. A terminal whose TITLE happens to
+    # contain the pattern (because the pattern is in the command line you just
+    # typed) must never outrank the app whose NAME actually is the pattern.
+    if ol == pattern:
+        score = 3
+    elif pattern in ol:
+        score = 2
+    elif pattern in tl:
+        score = 1
+    else:
+        continue
+
+    area = bounds.get("Width", 0) * bounds.get("Height", 0)
+    matches.append((score, area, w.get("kCGWindowNumber"), owner, title))
 
 if not matches:
     sys.stderr.write("no on-screen window matching %r\n" % sys.argv[1])
     sys.exit(4)
 
-matches.sort(reverse=True)          # largest match wins
-_, wid, owner, title = matches[0]
-if len(matches) > 1:
-    sys.stderr.write("note: %d windows matched; using largest\n" % len(matches))
+matches.sort(reverse=True)          # best score, then largest
+score, _, wid, owner, title = matches[0]
+tied = [m for m in matches if m[0] == score]
+if len(tied) > 1:
+    sys.stderr.write("note: %d equally good matches; using largest\n" % len(tied))
 sys.stderr.write("matched: %s — %s\n" % (owner, title or "(untitled)"))
 print(wid)
 PYEOF
